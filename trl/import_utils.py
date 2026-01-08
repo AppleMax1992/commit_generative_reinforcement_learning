@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2022 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,97 +11,83 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import importlib
 import os
-import warnings
+import sys
 from itertools import chain
 from types import ModuleType
 from typing import Any
 
-from packaging import version
 from transformers.utils.import_utils import _is_package_available
 
 
-LIGER_KERNEL_MIN_VERSION = "0.5.8"
+if sys.version_info < (3, 8):
+    _is_python_greater_3_8 = False
+else:
+    _is_python_greater_3_8 = True
 
 # Use same as transformers.utils.import_utils
-_deepspeed_available = _is_package_available("deepspeed")
-_fastapi_available = _is_package_available("fastapi")
-_joblib_available = _is_package_available("joblib")
-_liger_kernel_available, _liger_kernel_version = _is_package_available("liger_kernel", return_version=True)
-_llm_blender_available = _is_package_available("llm_blender")
-_math_verify_available = _is_package_available("math_verify")
-_mergekit_available = _is_package_available("mergekit")
-_pydantic_available = _is_package_available("pydantic")
-_requests_available = _is_package_available("requests")
+_diffusers_available = _is_package_available("diffusers")
 _unsloth_available = _is_package_available("unsloth")
-_uvicorn_available = _is_package_available("uvicorn")
-_vllm_available, _vllm_version = _is_package_available("vllm", return_version=True)
-_vllm_ascend_available = _is_package_available("vllm_ascend")
-_weave_available = _is_package_available("weave")
+_rich_available = _is_package_available("rich")
+_liger_kernel_available = _is_package_available("liger_kernel")
+_llmblender_available = _is_package_available("llm_blender")
 
 
-def is_deepspeed_available() -> bool:
-    return _deepspeed_available
-
-
-def is_fastapi_available() -> bool:
-    return _fastapi_available
-
-
-def is_joblib_available() -> bool:
-    return _joblib_available
-
-
-def is_liger_kernel_available(min_version: str = LIGER_KERNEL_MIN_VERSION) -> bool:
-    return _liger_kernel_available and version.parse(_liger_kernel_version) >= version.parse(min_version)
-
-
-def is_llm_blender_available() -> bool:
-    return _llm_blender_available
-
-
-def is_math_verify_available() -> bool:
-    return _math_verify_available
-
-
-def is_mergekit_available() -> bool:
-    return _mergekit_available
-
-
-def is_pydantic_available() -> bool:
-    return _pydantic_available
-
-
-def is_requests_available() -> bool:
-    return _requests_available
+def is_diffusers_available() -> bool:
+    return _diffusers_available
 
 
 def is_unsloth_available() -> bool:
     return _unsloth_available
 
 
-def is_uvicorn_available() -> bool:
-    return _uvicorn_available
+def is_rich_available() -> bool:
+    return _rich_available
 
 
-def is_vllm_available() -> bool:
-    if _vllm_available and version.parse(_vllm_version) != version.parse("0.10.2"):
-        warnings.warn(
-            f"TRL currently only supports vLLM version `0.10.2`. You have version {_vllm_version} installed. We "
-            "recommend to install this version to avoid compatibility issues.",
-            UserWarning,
-        )
-    return _vllm_available
+def is_liger_kernel_available() -> bool:  # replace by transformers.import_utils.is_liger_kernel_available() from v4.45
+    return _liger_kernel_available
 
 
-def is_vllm_ascend_available() -> bool:
-    return _vllm_ascend_available
+def is_llmblender_available() -> bool:
+    return _llmblender_available
 
 
-def is_weave_available() -> bool:
-    return _weave_available
+def is_accelerate_greater_20_0() -> bool:
+    if _is_python_greater_3_8:
+        from importlib.metadata import version
+
+        accelerate_version = version("accelerate")
+    else:
+        import pkg_resources
+
+        accelerate_version = pkg_resources.get_distribution("accelerate").version
+    return accelerate_version >= "0.20.0"
+
+
+def is_transformers_greater_than(current_version: str) -> bool:
+    if _is_python_greater_3_8:
+        from importlib.metadata import version
+
+        _transformers_version = version("transformers")
+    else:
+        import pkg_resources
+
+        _transformers_version = pkg_resources.get_distribution("transformers").version
+    return _transformers_version > current_version
+
+
+def is_torch_greater_2_0() -> bool:
+    if _is_python_greater_3_8:
+        from importlib.metadata import version
+
+        torch_version = version("torch")
+    else:
+        import pkg_resources
+
+        torch_version = pkg_resources.get_distribution("torch").version
+    return torch_version >= "2.0"
 
 
 class _LazyModule(ModuleType):
@@ -162,3 +148,7 @@ class _LazyModule(ModuleType):
 
     def __reduce__(self):
         return (self.__class__, (self._name, self.__file__, self._import_structure))
+
+
+class OptionalDependencyNotAvailable(BaseException):
+    """Internally used error class for signalling an optional dependency was not found."""

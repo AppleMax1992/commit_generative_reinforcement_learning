@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,191 +12,207 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import sys
-import warnings
-from importlib.metadata import PackageNotFoundError, version
+# flake8: noqa
+
+__version__ = "0.11.4"
+
 from typing import TYPE_CHECKING
+from .import_utils import _LazyModule, is_diffusers_available, OptionalDependencyNotAvailable
 
-from .import_utils import _LazyModule
-
-
-if sys.version_info[:2] == (3, 9):
-    warnings.warn(
-        (
-            "Support for Python 3.9 will be dropped in the next release "
-            "(after its end-of-life on October 31, 2025). "
-            "Please upgrade to Python 3.10 or newer."
-        ),
-        category=FutureWarning,
-        stacklevel=2,
-    )
-
-
-try:
-    __version__ = version("trl")
-except PackageNotFoundError:
-    __version__ = "unknown"
 
 _import_structure = {
-    "scripts": ["DatasetMixtureConfig", "ScriptArguments", "TrlParser", "get_dataset", "init_zero_verbose"],
-    "data_utils": [
-        "apply_chat_template",
-        "extract_prompt",
-        "is_conversational",
-        "is_conversational_from_value",
-        "maybe_apply_chat_template",
-        "maybe_convert_to_chatml",
-        "maybe_extract_prompt",
-        "maybe_unpair_preference_dataset",
-        "pack_dataset",
-        "prepare_multimodal_messages",
-        "prepare_multimodal_messages_vllm",
-        "truncate_dataset",
-        "unpair_preference_dataset",
+    "core": [
+        "set_seed",
+    ],
+    "environment": [
+        "TextEnvironment",
+        "TextHistory",
+    ],
+    "extras": [
+        "BestOfNSampler",
+    ],
+    "import_utils": [
+        "is_diffusers_available",
+        "is_liger_kernel_available",
+        "is_llmblender_available",
     ],
     "models": [
-        "SUPPORTED_ARCHITECTURES",
         "AutoModelForCausalLMWithValueHead",
         "AutoModelForSeq2SeqLMWithValueHead",
         "PreTrainedModelWrapper",
-        "clone_chat_template",
         "create_reference_model",
         "setup_chat_format",
+        "SUPPORTED_ARCHITECTURES",
     ],
     "trainer": [
-        "AllTrueJudge",
-        "BaseBinaryJudge",
-        "BaseJudge",
-        "BasePairwiseJudge",
-        "BaseRankJudge",
-        "BCOConfig",
-        "BCOTrainer",
-        "CPOConfig",
-        "CPOTrainer",
+        "DataCollatorForCompletionOnlyLM",
         "DPOConfig",
         "DPOTrainer",
-        "FDivergenceConstants",
-        "FDivergenceType",
-        "GKDConfig",
-        "GKDTrainer",
-        "GRPOConfig",
-        "GRPOTrainer",
-        "HfPairwiseJudge",
+        "CPOConfig",
+        "CPOTrainer",
+        "AlignPropConfig",
+        "AlignPropTrainer",
+        "IterativeSFTTrainer",
         "KTOConfig",
         "KTOTrainer",
-        "LogCompletionsCallback",
+        "BCOConfig",
+        "BCOTrainer",
         "ModelConfig",
         "NashMDConfig",
         "NashMDTrainer",
         "OnlineDPOConfig",
         "OnlineDPOTrainer",
-        "OpenAIPairwiseJudge",
+        "XPOConfig",
+        "XPOTrainer",
         "ORPOConfig",
         "ORPOTrainer",
-        "PairRMJudge",
         "PPOConfig",
         "PPOTrainer",
-        "PRMConfig",
-        "PRMTrainer",
+        "PPOv2Config",
+        "PPOv2Trainer",
         "RewardConfig",
         "RewardTrainer",
         "RLOOConfig",
         "RLOOTrainer",
         "SFTConfig",
         "SFTTrainer",
+        "FDivergenceConstants",
+        "FDivergenceType",
+        "GKDTrainer",
+        "GKDConfig",
         "WinRateCallback",
-        "XPOConfig",
-        "XPOTrainer",
+        "BaseJudge",
+        "BaseRankJudge",
+        "BasePairwiseJudge",
+        "RandomRankJudge",
+        "RandomPairwiseJudge",
+        "PairRMJudge",
+        "HfPairwiseJudge",
+        "OpenAIPairwiseJudge",
+        "LogCompletionsCallback",
     ],
-    "trainer.callbacks": [
-        "BEMACallback",
-        "MergeModelCallback",
-        "RichProgressCallback",
-        "SyncRefModelCallback",
-        "WeaveCallback",
-    ],
+    "commands": [],
+    "commands.cli_utils": ["init_zero_verbose", "SFTScriptArguments", "DPOScriptArguments", "TrlParser"],
+    "trainer.callbacks": ["RichProgressCallback", "SyncRefModelCallback"],
     "trainer.utils": ["get_kbit_device_map", "get_peft_config", "get_quantization_config"],
+    "multitask_prompt_tuning": [
+        "MultitaskPromptEmbedding",
+        "MultitaskPromptTuningConfig",
+        "MultitaskPromptTuningInit",
+    ],
+    "data_utils": [
+        "apply_chat_template",
+        "extract_prompt",
+        "is_conversational",
+        "maybe_apply_chat_template",
+        "maybe_extract_prompt",
+        "maybe_unpair_preference_dataset",
+        "unpair_preference_dataset",
+    ],
 }
 
-if TYPE_CHECKING:
-    from .data_utils import (
-        apply_chat_template,
-        extract_prompt,
-        is_conversational,
-        is_conversational_from_value,
-        maybe_apply_chat_template,
-        maybe_convert_to_chatml,
-        maybe_extract_prompt,
-        maybe_unpair_preference_dataset,
-        pack_dataset,
-        prepare_multimodal_messages,
-        prepare_multimodal_messages_vllm,
-        truncate_dataset,
-        unpair_preference_dataset,
+try:
+    if not is_diffusers_available():
+        raise OptionalDependencyNotAvailable()
+except OptionalDependencyNotAvailable:
+    pass
+else:
+    _import_structure["models"].extend(
+        [
+            "DDPOPipelineOutput",
+            "DDPOSchedulerOutput",
+            "DDPOStableDiffusionPipeline",
+            "DefaultDDPOStableDiffusionPipeline",
+        ]
     )
+    _import_structure["trainer"].extend(["DDPOConfig", "DDPOTrainer"])
+
+if TYPE_CHECKING:
+    from .core import set_seed
+    from .environment import TextEnvironment, TextHistory
+    from .extras import BestOfNSampler
+    from .import_utils import is_diffusers_available, is_liger_kernel_available, is_llmblender_available
     from .models import (
-        SUPPORTED_ARCHITECTURES,
         AutoModelForCausalLMWithValueHead,
         AutoModelForSeq2SeqLMWithValueHead,
         PreTrainedModelWrapper,
-        clone_chat_template,
         create_reference_model,
         setup_chat_format,
+        SUPPORTED_ARCHITECTURES,
     )
-    from .scripts import DatasetMixtureConfig, ScriptArguments, TrlParser, get_dataset, init_zero_verbose
     from .trainer import (
-        AllTrueJudge,
-        BaseBinaryJudge,
-        BaseJudge,
-        BasePairwiseJudge,
-        BaseRankJudge,
-        BCOConfig,
-        BCOTrainer,
-        CPOConfig,
-        CPOTrainer,
+        DataCollatorForCompletionOnlyLM,
         DPOConfig,
         DPOTrainer,
-        FDivergenceConstants,
-        FDivergenceType,
-        GKDConfig,
-        GKDTrainer,
-        GRPOConfig,
-        GRPOTrainer,
-        HfPairwiseJudge,
+        CPOConfig,
+        CPOTrainer,
+        AlignPropConfig,
+        AlignPropTrainer,
+        IterativeSFTTrainer,
         KTOConfig,
         KTOTrainer,
-        LogCompletionsCallback,
+        BCOConfig,
+        BCOTrainer,
         ModelConfig,
         NashMDConfig,
         NashMDTrainer,
         OnlineDPOConfig,
         OnlineDPOTrainer,
-        OpenAIPairwiseJudge,
+        XPOConfig,
+        XPOTrainer,
         ORPOConfig,
         ORPOTrainer,
-        PairRMJudge,
         PPOConfig,
         PPOTrainer,
-        PRMConfig,
-        PRMTrainer,
+        PPOv2Config,
+        PPOv2Trainer,
         RewardConfig,
         RewardTrainer,
         RLOOConfig,
         RLOOTrainer,
         SFTConfig,
         SFTTrainer,
+        FDivergenceConstants,
+        FDivergenceType,
+        GKDTrainer,
+        GKDConfig,
         WinRateCallback,
-        XPOConfig,
-        XPOTrainer,
+        BaseJudge,
+        BaseRankJudge,
+        BasePairwiseJudge,
+        RandomRankJudge,
+        RandomPairwiseJudge,
+        PairRMJudge,
+        HfPairwiseJudge,
+        OpenAIPairwiseJudge,
+        LogCompletionsCallback,
     )
-    from .trainer.callbacks import (
-        BEMACallback,
-        MergeModelCallback,
-        RichProgressCallback,
-        SyncRefModelCallback,
-        WeaveCallback,
-    )
+    from .trainer.callbacks import RichProgressCallback, SyncRefModelCallback
     from .trainer.utils import get_kbit_device_map, get_peft_config, get_quantization_config
+    from .commands.cli_utils import init_zero_verbose, SFTScriptArguments, DPOScriptArguments, TrlParser
+    from .data_utils import (
+        apply_chat_template,
+        extract_prompt,
+        is_conversational,
+        maybe_apply_chat_template,
+        maybe_extract_prompt,
+        maybe_unpair_preference_dataset,
+        unpair_preference_dataset,
+    )
+
+    try:
+        if not is_diffusers_available():
+            raise OptionalDependencyNotAvailable()
+    except OptionalDependencyNotAvailable:
+        pass
+    else:
+        from .models import (
+            DDPOPipelineOutput,
+            DDPOSchedulerOutput,
+            DDPOStableDiffusionPipeline,
+            DefaultDDPOStableDiffusionPipeline,
+        )
+        from .trainer import DDPOConfig, DDPOTrainer
 
 else:
     import sys

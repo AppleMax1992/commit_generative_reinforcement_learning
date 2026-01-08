@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2024 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,135 +12,92 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import textwrap
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import jinja2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from datasets import Dataset, IterableDataset
-from transformers import (
-    BaseImageProcessor,
-    FeatureExtractionMixin,
-    PreTrainedModel,
-    PreTrainedTokenizerBase,
-    ProcessorMixin,
-    TrainerCallback,
-)
+from transformers import PreTrainedTokenizerBase, TrainerCallback, is_apex_available
+from transformers.modeling_utils import PreTrainedModel
 from transformers.trainer_utils import EvalPrediction
 from transformers.training_args import OptimizerNames
-from transformers.utils import is_peft_available
 
-from ..data_utils import is_conversational, maybe_apply_chat_template
 from ..models.utils import unwrap_model_for_generation
-from .judges import BasePairwiseJudge
 from .online_dpo_trainer import OnlineDPOTrainer
-from .utils import (
-    SIMPLE_CHAT_TEMPLATE,
-    empty_cache,
-    get_reward,
-    selective_log_softmax,
-    truncate_right,
-)
+from .utils import empty_cache, get_reward, truncate_right
 from .xpo_config import XPOConfig
 
 
-if is_peft_available():
-    from peft import PeftModel
+if is_apex_available():
+    from apex import amp
 
 
 class XPOTrainer(OnlineDPOTrainer):
-    """
-    Trainer for Exploratory Preference Optimization (XPO).
-
-    It is implemented as a subclass of [`OnlineDPOTrainer`].
+    r"""
+    Initialize XPOTrainer as a subclass of [`OnlineDPOConfig`].
 
     Args:
-        model ([`~transformers.PreTrainedModel`]):
+        model (`transformers.PreTrainedModel`):
             The model to train, preferably an `AutoModelForCausalLM`.
-        ref_model ([`PreTrainedModelWrapper`]):
-            Hugging Face transformer model with a casual language modelling head. Used for implicit reward computation
-            and loss. If no reference model is provided, the trainer will create a reference model with the same
-            architecture as the model to be optimized.
-        reward_funcs ([`~transformers.PreTrainedModel`]):
-            The reward model to score completions with, preferably an
-            [`~transformers.AutoModelForSequenceClassification`].
-        judge ([`BasePairwiseJudge`]):
+        ref_model (`PreTrainedModelWrapper`):
+            Hugging Face transformer model with a casual language modelling head. Used for implicit reward computation and loss. If no
+            reference model is provided, the trainer will create a reference model with the same architecture as the model to be optimized.
+        reward_model (`transformers.PreTrainedModel`):
+            The reward model to score completions with, preferably an `AutoModelForSequenceClassification`.
+        judge (`BasePairwiseJudge`):
             The judge to use for pairwise comparison of model completions.
-        args ([`XPOConfig`]):
+        args (`XPOConfig`):
             The XPO config arguments to use for training.
-        data_collator ([`~transformers.DataCollator`]):
-            The data collator to use for training. If None is specified, the default data collator
-            ([`DPODataCollatorWithPadding`]) will be used which will pad the sequences to the maximum length of the
-            sequences in the batch, given a dataset of paired sequences.
-        train_dataset ([`~datasets.Dataset`]):
+        data_collator (`transformers.DataCollator`):
+            The data collator to use for training. If None is specified, the default data collator (`DPODataCollatorWithPadding`) will be used
+            which will pad the sequences to the maximum length of the sequences in the batch, given a dataset of paired sequences.
+        train_dataset (`datasets.Dataset`):
             The dataset to use for training.
-        eval_dataset ([`~datasets.Dataset`]):
+        eval_dataset (`datasets.Dataset`):
             The dataset to use for evaluation.
-        processing_class ([`~transformers.PreTrainedTokenizerBase`], [`~transformers.BaseImageProcessor`], [`~transformers.FeatureExtractionMixin`] or [`~transformers.ProcessorMixin`], *optional*):
-            Processing class used to process the data. If provided, will be used to automatically process the inputs
-            for the model, and it will be saved along the model to make it easier to rerun an interrupted training or
-            reuse the fine-tuned model.
-        peft_config (`dict`):
+        tokenizer (`transformers.PreTrainedTokenizerBase`):
+            The tokenizer to use for training. This argument is required if you want to use the default data collator.
+        peft_config (`Dict`):
             The peft config to use for training.
-        compute_metrics (`Callable[[EvalPrediction], dict]`, *optional*):
-            The function to use to compute the metrics. Must take a `EvalPrediction` and return a dictionary string to
-            metric values.
-        callbacks (`list[transformers.TrainerCallback]`):
+        compute_metrics (`Callable[[EvalPrediction], Dict]`, *optional*):
+            The function to use to compute the metrics. Must take a `EvalPrediction` and return
+            a dictionary string to metric values.
+        callbacks (`List[transformers.TrainerCallback]`):
             The callbacks to use for training.
-        optimizers (`tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]`):
+        optimizers (`Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR]`):
             The optimizer and scheduler to use for training.
         preprocess_logits_for_metrics (`Callable[[torch.Tensor, torch.Tensor], torch.Tensor]`):
             The function to use to preprocess the logits before computing the metrics.
     """
 
     _tag_names = ["trl", "xpo"]
-    _name = "XPO"
-    _paper = {
-        "title": "Exploratory Preference Optimization: Harnessing Implicit Q*-Approximation for Sample-Efficient RLHF",
-        "id": "2405.21046",
-        # docstyle-ignore
-        "citation": textwrap.dedent("""\
-            @article{jung2024binary,
-                title        = {{Exploratory Preference Optimization: Harnessing Implicit Q*-Approximation for Sample-Efficient RLHF}},
-                author       = {Tengyang Xie and Dylan J. Foster and Akshay Krishnamurthy and Corby Rosset and Ahmed Awadallah and Alexander Rakhlin},
-                year         = 2024,
-                eprint       = {arXiv:2405.21046}
-            }"""),
-    }
 
     def __init__(
         self,
         model: Union[PreTrainedModel, nn.Module] = None,
         ref_model: Union[PreTrainedModel, nn.Module] = None,
-        reward_funcs: Optional[nn.Module] = None,
-        judge: Optional[BasePairwiseJudge] = None,
+        reward_model: Optional[nn.Module] = None,
         args: Optional[XPOConfig] = None,
         data_collator: Optional[Callable] = None,
         train_dataset: Optional[Union[Dataset, IterableDataset]] = None,
-        eval_dataset: Optional[Union[Dataset, dict[str, Dataset]]] = None,
-        processing_class: Optional[
-            Union[PreTrainedTokenizerBase, BaseImageProcessor, FeatureExtractionMixin, ProcessorMixin]
-        ] = None,
-        reward_processing_classes: Optional[Union[PreTrainedTokenizerBase, list[PreTrainedTokenizerBase]]] = None,
-        peft_config: Optional[dict] = None,
-        compute_metrics: Optional[Callable[[EvalPrediction], dict]] = None,
-        callbacks: Optional[list[TrainerCallback]] = None,
-        optimizers: tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
+        eval_dataset: Optional[Union[Dataset, Dict[str, Dataset]]] = None,
+        tokenizer: Optional[PreTrainedTokenizerBase] = None,
+        peft_config: Optional[Dict] = None,
+        compute_metrics: Optional[Callable[[EvalPrediction], Dict]] = None,
+        callbacks: Optional[List[TrainerCallback]] = None,
+        optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
         preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
     ) -> None:
         super().__init__(
             model=model,
             ref_model=ref_model,
-            judge=judge,
-            reward_funcs=reward_funcs,
+            reward_model=reward_model,
             args=args,
             data_collator=data_collator,
             train_dataset=train_dataset,
             eval_dataset=eval_dataset,
-            processing_class=processing_class,
-            reward_processing_classes=reward_processing_classes,
+            tokenizer=tokenizer,
             peft_config=peft_config,
             compute_metrics=compute_metrics,
             callbacks=callbacks,
@@ -158,6 +115,10 @@ class XPOTrainer(OnlineDPOTrainer):
             "loss/xpo": [],
             "objective/kl": [],
             "objective/entropy": [],
+            # Replace "scores" by "model_scores" and "ref_scores"
+            "objective/model_scores": [],
+            "objective/ref_scores": [],
+            "objective/scores_margin": [],
             "rewards/chosen": [],
             "rewards/rejected": [],
             "rewards/accuracies": [],
@@ -170,13 +131,6 @@ class XPOTrainer(OnlineDPOTrainer):
             "alpha": [],
             "beta": [],
         }
-        if self.reward_funcs is not None:
-            if len(self.reward_funcs) != 1:
-                raise ValueError("XPOTrainer only supports one reward function/model.")
-            self.reward_funcs = self.reward_funcs[0]
-            self.stats["objective/model_scores"] = []
-            self.stats["objective/ref_scores"] = []
-            self.stats["objective/scores_margin"] = []
 
     @property
     def alpha(self):
@@ -187,26 +141,16 @@ class XPOTrainer(OnlineDPOTrainer):
             return self._alpha
 
     def _generate_completions(self, prompts, model):
-        with unwrap_model_for_generation(model, self.accelerator) as unwrapped_policy_model_for_gen:
-            model_output = unwrapped_policy_model_for_gen.generate(
+        with unwrap_model_for_generation(model, self.accelerator) as unwrapped_model:
+            model_output = unwrapped_model.generate(
                 input_ids=prompts["input_ids"],
                 attention_mask=prompts["attention_mask"],
                 generation_config=self.generation_config,
             )
 
-        actual_model_for_ref_generation: torch.nn.Module
-        if self.ref_model is None:
-            unwrapped_main_model_for_ref_logic = self.accelerator.unwrap_model(model)
-
-            if is_peft_available() and isinstance(unwrapped_main_model_for_ref_logic, PeftModel):
-                actual_model_for_ref_generation = unwrapped_main_model_for_ref_logic.get_base_model()
-            else:
-                actual_model_for_ref_generation = unwrapped_main_model_for_ref_logic
-        else:
-            actual_model_for_ref_generation = self.accelerator.unwrap_model(self.ref_model)
-
-        with unwrap_model_for_generation(actual_model_for_ref_generation, self.accelerator) as final_ref_model_for_gen:
-            ref_output = final_ref_model_for_gen.generate(
+        ref_model = model if self.ref_model is None else self.ref_model
+        with torch.no_grad(), unwrap_model_for_generation(ref_model, self.accelerator) as unwrapped_ref_model:
+            ref_output = unwrapped_ref_model.generate(
                 input_ids=prompts["input_ids"],
                 attention_mask=prompts["attention_mask"],
                 generation_config=self.generation_config,
@@ -220,23 +164,21 @@ class XPOTrainer(OnlineDPOTrainer):
         # Process model completions
         model_completion_ids = model_output[:, context_length:]
         model_completion_ids, model_completion_mask = truncate_right(
-            model_completion_ids, self.processing_class.eos_token_id, self.processing_class.pad_token_id
+            model_completion_ids, self.tokenizer.eos_token_id, self.tokenizer.pad_token_id
         )
         model_data = {
             "input_ids": torch.cat((prompts["input_ids"], model_completion_ids), dim=1),
             "attention_mask": torch.cat((prompts["attention_mask"], model_completion_mask), dim=1),
-            "raw": prompts["raw"],
         }
 
         # Process reference model completions
         ref_completion_ids = ref_output[:, context_length:]
         ref_completion_ids, ref_completion_mask = truncate_right(
-            ref_completion_ids, self.processing_class.eos_token_id, self.processing_class.pad_token_id
+            ref_completion_ids, self.tokenizer.eos_token_id, self.tokenizer.pad_token_id
         )
         ref_data = {
             "input_ids": torch.cat((prompts["input_ids"], ref_completion_ids), dim=1),
             "attention_mask": torch.cat((prompts["attention_mask"], ref_completion_mask), dim=1),
-            "raw": prompts["raw"],
         }
 
         return model_data, ref_data
@@ -244,61 +186,27 @@ class XPOTrainer(OnlineDPOTrainer):
     def _compute_rewards(self, model_data, ref_data, context_length):
         with torch.no_grad():
             _, model_scores, _ = get_reward(
-                self.reward_funcs, model_data["input_ids"], self.processing_class.pad_token_id, context_length
+                self.reward_model, model_data["input_ids"], self.tokenizer.pad_token_id, context_length
             )
             _, ref_scores, _ = get_reward(
-                self.reward_funcs, ref_data["input_ids"], self.processing_class.pad_token_id, context_length
+                self.reward_model, ref_data["input_ids"], self.tokenizer.pad_token_id, context_length
             )
 
         # Apply EOS penalty if needed
         if self.args.missing_eos_penalty is not None:
-            model_contain_eos = torch.any(model_data["input_ids"] == self.processing_class.eos_token_id, dim=-1)
-            ref_contain_eos = torch.any(ref_data["input_ids"] == self.processing_class.eos_token_id, dim=-1)
+            model_contain_eos = torch.any(model_data["input_ids"] == self.tokenizer.eos_token_id, dim=-1)
+            ref_contain_eos = torch.any(ref_data["input_ids"] == self.tokenizer.eos_token_id, dim=-1)
             model_scores[~model_contain_eos] -= self.args.missing_eos_penalty
             ref_scores[~ref_contain_eos] -= self.args.missing_eos_penalty
 
         return model_scores, ref_scores
 
-    def _compute_judge(self, model_data, ref_data, context_length):
-        prompts = model_data["raw"]
-        model_data_completions = self.processing_class.batch_decode(
-            model_data["input_ids"][:, context_length:], skip_special_tokens=True
-        )
-        model_data_completions = [completion.strip() for completion in model_data_completions]
-
-        ref_data_completions = self.processing_class.batch_decode(
-            ref_data["input_ids"][:, context_length:], skip_special_tokens=True
-        )
-        ref_data_completions = [completion.strip() for completion in ref_data_completions]
-
-        if is_conversational({"prompt": prompts[0]}):
-            model_data_completions = [
-                [{"role": "assistant", "content": completion}] for completion in model_data_completions
-            ]
-            environment = jinja2.Environment()
-            template = environment.from_string(SIMPLE_CHAT_TEMPLATE)
-            prompts = [template.render(messages=message) for message in prompts]
-            model_data_completions = [template.render(messages=completion) for completion in model_data_completions]
-
-            ref_data_completions = [
-                [{"role": "assistant", "content": completion}] for completion in ref_data_completions
-            ]
-            ref_data_completions = [template.render(messages=completion) for completion in ref_data_completions]
-
-        ranks_of_first_completion = self.judge.judge(
-            prompts,
-            list(zip(model_data_completions, ref_data_completions)),
-        )
-        # convert ranks to a True/False mask:
-        # when rank == 0, it means the first completion is the best
-        # when rank == 1, it means the second completion is the best
-        return torch.tensor([rank == 0 for rank in ranks_of_first_completion], device=model_data["input_ids"].device)
-
     def _compute_logprobs(self, model, model_data, ref_data, context_length):
         def compute_logprobs_for_data(m, data):
             output = m(data["input_ids"], attention_mask=data["attention_mask"])
             logits = output.logits[:, context_length - 1 : -1]
-            token_logprobs = selective_log_softmax(logits, data["input_ids"][:, context_length:])
+            logprobs = F.log_softmax(logits, dim=-1)
+            token_logprobs = torch.gather(logprobs, 2, data["input_ids"][:, context_length:].unsqueeze(-1)).squeeze(-1)
             return token_logprobs
 
         # Compute logprobs for model completions
@@ -374,26 +282,27 @@ class XPOTrainer(OnlineDPOTrainer):
         model_logprobs_ref_data,
         ref_logprobs_ref_data,
         ref_logprobs_model_data,
-        chosen_mask,
+        model_scores,
+        ref_scores,
         dpo_losses,
         xpo_losses,
         context_length,
-        model_scores=None,
-        ref_scores=None,
     ):
         # Helper function to gather and compute mean
         def gather_mean(tensor):
-            return self.accelerator.gather_for_metrics(tensor).mean().item()
+            return self.accelerator.gather(tensor).mean().item()
 
         # Log losses
         self.stats["loss/dpo"].append(gather_mean(dpo_losses))
         self.stats["loss/xpo"].append(gather_mean(xpo_losses))
 
         # Log scores
-        if self.reward_funcs is not None:
-            self.stats["objective/model_scores"].append(gather_mean(model_scores))
-            self.stats["objective/ref_scores"].append(gather_mean(ref_scores))
-            self.stats["objective/scores_margin"].append(gather_mean(model_scores - ref_scores))
+        self.stats["objective/model_scores"].append(gather_mean(model_scores))
+        self.stats["objective/ref_scores"].append(gather_mean(ref_scores))
+        self.stats["objective/scores_margin"].append(gather_mean(model_scores - ref_scores))
+
+        # Determine which model outputs are "chosen" vs "rejected"
+        chosen_mask = model_scores >= ref_scores
 
         # Log logprobs
         model_logprobs_model_data_sum = model_logprobs_model_data.sum(1)
@@ -440,8 +349,8 @@ class XPOTrainer(OnlineDPOTrainer):
         self.stats["rewards/accuracies"].append(gather_mean(accuracy.mean()))
 
         # Log EOS token statistics
-        model_eos = (model_data["input_ids"][:, context_length:] == self.processing_class.eos_token_id).any(dim=1)
-        ref_eos = (ref_data["input_ids"][:, context_length:] == self.processing_class.eos_token_id).any(dim=1)
+        model_eos = (model_data["input_ids"][:, context_length:] == self.tokenizer.eos_token_id).any(dim=1)
+        ref_eos = (ref_data["input_ids"][:, context_length:] == self.tokenizer.eos_token_id).any(dim=1)
         self.stats["val/model_contain_eos_token"].append(gather_mean(model_eos.float()))
         self.stats["val/ref_contain_eos_token"].append(gather_mean(ref_eos.float()))
 
@@ -449,18 +358,8 @@ class XPOTrainer(OnlineDPOTrainer):
         self.stats["alpha"].append(self.alpha)
         self.stats["beta"].append(self.beta)
 
-    def training_step(
-        self, model: nn.Module, inputs: dict[str, Union[torch.Tensor, Any]], num_items_in_batch: Optional[int] = None
-    ) -> torch.Tensor:
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
         model.train()
-
-        # Apply chat template and tokenize the input
-        batch_size = len(next(iter(inputs.values())))
-        prompts = inputs["prompt"]
-        inputs = [{k: v[i] for k, v in inputs.items()} for i in range(batch_size)]
-        inputs = [maybe_apply_chat_template(x, self.processing_class) for x in inputs]
-        inputs = [self.tokenize_row(x, self.model.config.is_encoder_decoder, self.processing_class) for x in inputs]
-        inputs = self.data_collator(inputs)
 
         # need the prompt_ only
         inputs = self._prepare_inputs(inputs)
@@ -468,7 +367,6 @@ class XPOTrainer(OnlineDPOTrainer):
         prompts = {
             "input_ids": inputs["prompt_input_ids"],
             "attention_mask": inputs["prompt_attention_mask"],
-            "raw": prompts,
         }
         del inputs
 
@@ -479,12 +377,7 @@ class XPOTrainer(OnlineDPOTrainer):
         model_data, ref_data = self._process_completions(model_output, ref_output, prompts)
 
         # Compute rewards
-        if self.reward_funcs is not None:
-            model_scores, ref_scores = self._compute_rewards(model_data, ref_data, context_length)
-            chosen_mask = model_scores >= ref_scores
-        else:
-            model_scores, ref_scores = None, None
-            chosen_mask = self._compute_judge(model_data, ref_data, context_length)
+        model_data_scores, ref_data_scores = self._compute_rewards(model_data, ref_data, context_length)
 
         # Compute logprobs
         model_logprobs_model_data, model_logprobs_ref_data, ref_logprobs_ref_data, ref_logprobs_model_data = (
@@ -497,7 +390,7 @@ class XPOTrainer(OnlineDPOTrainer):
             model_logprobs_ref_data,
             ref_logprobs_ref_data,
             ref_logprobs_model_data,
-            chosen_mask,
+            model_data_scores >= ref_data_scores,
         )
 
         # Log everything
@@ -508,12 +401,11 @@ class XPOTrainer(OnlineDPOTrainer):
             model_logprobs_ref_data.detach(),
             ref_logprobs_ref_data,
             ref_logprobs_model_data,
-            chosen_mask,
+            model_data_scores,
+            ref_data_scores,
             dpo_losses.detach(),
             xpo_losses.detach(),
             context_length,
-            model_scores,
-            ref_scores,
         )
 
         if (
@@ -530,6 +422,10 @@ class XPOTrainer(OnlineDPOTrainer):
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
-        self.accelerator.backward(loss, **kwargs)
+        if self.use_apex:
+            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            self.accelerator.backward(loss, **kwargs)
 
         return loss.detach() / self.args.gradient_accumulation_steps

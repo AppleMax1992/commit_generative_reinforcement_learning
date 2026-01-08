@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2022 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM, is_torch_npu_available, is_torch_xpu_available
@@ -60,30 +59,34 @@ class ValueHead(nn.Module):
 
 
 class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
-    """
-    An autoregressive model with a value head in addition to the language model head. This class inherits from
-    [`PreTrainedModelWrapper`] and wraps a [`~transformers.PreTrainedModel`] class. The wrapper class supports classic
-    functions such as `from_pretrained`, `push_to_hub` and `generate`. To call a method of the wrapped model, simply
-    manipulate the `pretrained_model` attribute of this class.
+    r"""
+    An autoregressive model with a value head in addition to the language model head.
+    This class inherits from `~trl.PreTrainedModelWrapper` and wraps a
+    `transformers.PreTrainedModel` class. The wrapper class supports classic functions
+    such as `from_pretrained`, `push_to_hub` and `generate`. To call a method of the wrapped
+    model, simply manipulate the `pretrained_model` attribute of this class.
 
     Class attributes:
-        - **transformers_parent_class** ([`~transformers.PreTrainedModel`]) -- The parent class of the wrapped model.
-          This
+        - **transformers_parent_class** (`transformers.PreTrainedModel`) -- The parent class of the wrapped model. This
             should be set to `transformers.AutoModelForCausalLM` for this class.
+        - **lm_head_namings** (`tuple`) -- A tuple of strings that are used to identify the language model head of the
+            wrapped model. This is set to `("lm_head", "embed_out")` for this class but can be changed for other models
+            in the future
         - **supported_args** (`tuple`) -- A tuple of strings that are used to identify the arguments that are supported
-            by the [`ValueHead`] class. Currently, the supported args are:
+            by the `ValueHead` class. Currently, the supported args are:
             - **summary_dropout_prob** (`float`, `optional`, defaults to `None`) -- The dropout probability for the
-                [`ValueHead`] class.
+                `ValueHead` class.
             - **v_head_initializer_range** (`float`, `optional`, defaults to `0.2`) -- The initializer range for the
-                [`ValueHead`] if a specific initialization strategy is selected.
+                `ValueHead` if a specific initialization strategy is selected.
             - **v_head_init_strategy** (`str`, `optional`, defaults to `None`) -- The initialization strategy for the
-                [`ValueHead`]. Currently, the supported strategies are:
-                - **`None`** -- Initializes the weights of the [`ValueHead`] with a random distribution. This is the
-                  default strategy.
-                - **"normal"** -- Initializes the weights of the [`ValueHead`] with a normal distribution.
+                `ValueHead`. Currently, the supported strategies are:
+                - **`None`** -- Initializes the weights of the `ValueHead` with a random distribution. This is the default
+                    strategy.
+                - **"normal"** -- Initializes the weights of the `ValueHead` with a normal distribution.
     """
 
     transformers_parent_class = AutoModelForCausalLM
+    lm_head_namings = ["lm_head", "embed_out"]
     supported_args = (
         "summary_dropout_prob",
         "v_head_initializer_range",
@@ -91,32 +94,38 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
     )
 
     def __init__(self, pretrained_model, **kwargs):
-        """
+        r"""
         Initializes the model.
 
         Args:
-            pretrained_model ([`~transformers.PreTrainedModel`]):
-                The model to wrap. It should be a causal language model such as GPT2. or any model mapped inside the
-                `AutoModelForCausalLM` class.
+            pretrained_model (`transformers.PreTrainedModel`):
+                The model to wrap. It should be a causal language model such as GPT2.
+                or any model mapped inside the `AutoModelForCausalLM` class.
             kwargs (`dict`, `optional`):
-                Additional keyword arguments, that are passed to the [`ValueHead`] class.
+                Additional keyword arguments, that are passed to the `ValueHead` class.
         """
         super().__init__(pretrained_model, **kwargs)
         v_head_kwargs, _, _ = self._split_kwargs(kwargs)
+
+        if not any(hasattr(self.pretrained_model, attribute) for attribute in self.lm_head_namings):
+            raise ValueError("The model does not have a language model head, please use a model that has one.")
+
         self.v_head = ValueHead(self.pretrained_model.config, **v_head_kwargs)
+
         self._init_weights(**v_head_kwargs)
 
     def _init_weights(self, **kwargs):
         r"""
-        Initializes the weights of the value head. The default initialization strategy is random. Users can pass a
-        different initialization strategy by passing the `v_head_init_strategy` argument when calling
-        `.from_pretrained`. Supported strategies are:
+        Initializes the weights of the value head. The default initialization strategy is random.
+        Users can pass a different initialization strategy by passing the `v_head_init_strategy` argument
+        when calling `.from_pretrained`. Supported strategies are:
         - `normal`: initializes the weights with a normal distribution.
 
         Args:
             **kwargs (`dict`, `optional`):
-                Additional keyword arguments, that are passed to the [`ValueHead`] class. These arguments can contain
-                the `v_head_init_strategy` argument as well as the `v_head_initializer_range` argument.
+                Additional keyword arguments, that are passed to the `ValueHead` class. These arguments
+                can contain the `v_head_init_strategy` argument as well as the `v_head_initializer_range`
+                argument.
         """
         initializer_range = kwargs.pop("v_head_initializer_range", 0.2)
         # random init by default
@@ -185,9 +194,9 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
 
     def generate(self, *args, **kwargs):
         r"""
-        A simple wrapper around the `generate` method of the wrapped model. Please refer to the
-        [`generate`](https://huggingface.co/docs/transformers/internal/generation_utils) method of the wrapped model
-        for more information about the supported arguments.
+        A simple wrapper around the `generate` method of the wrapped model.
+        Please refer to the [`generate`](https://huggingface.co/docs/transformers/internal/generation_utils)
+        method of the wrapped model for more information about the supported arguments.
 
         Args:
             *args (`list`, *optional*):
@@ -199,8 +208,8 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
 
     def state_dict(self, *args, **kwargs):
         r"""
-        Returns the state dictionary of the model. We add the state dictionary of the value head to the state
-        dictionary of the wrapped model by prepending the key with `v_head.`.
+        Returns the state dictionary of the model. We add the state dictionary of the value head
+        to the state dictionary of the wrapped model by prepending the key with `v_head.`.
         """
         if not self.is_peft_model:
             pretrained_model_state_dict = self.pretrained_model.state_dict(*args, **kwargs)
@@ -220,9 +229,9 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
 
     def post_init(self, state_dict):
         r"""
-        We add the state dictionary of the value head to the state dictionary of the wrapped model by prepending the
-        key with `v_head.`. This function removes the `v_head.` prefix from the keys of the value head state
-        dictionary.
+        We add the state dictionary of the value head to the state dictionary of the wrapped model
+        by prepending the key with `v_head.`. This function removes the `v_head.` prefix from the
+        keys of the value head state dictionary.
         """
         for k in list(state_dict.keys()):
             if "v_head." in k:
@@ -264,18 +273,19 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
 
 
 class AutoModelForSeq2SeqLMWithValueHead(PreTrainedModelWrapper):
-    """
-    A seq2seq model with a value head in addition to the language model head. This class inherits from
-    [`PreTrainedModelWrapper`] and wraps a [`~transformers.PreTrainedModel`] class. The wrapper class supports classic
-    functions such as `from_pretrained` and `push_to_hub` and also provides some additional functionalities such as
-    `generate`.
+    r"""
+    A seq2seq model with a value head in addition to the language model head.
+    This class inherits from `~trl.PreTrainedModelWrapper` and wraps a
+    `transformers.PreTrainedModel` class. The wrapper class supports classic functions
+    such as `from_pretrained` and `push_to_hub` and also provides some additional
+    functionalities such as `generate`.
 
     Args:
-        pretrained_model ([`~transformers.PreTrainedModel`]):
-            The model to wrap. It should be a causal language model such as GPT2. or any model mapped inside the
-            [`~transformers.AutoModelForSeq2SeqLM`] class.
+        pretrained_model (`transformers.PreTrainedModel`):
+            The model to wrap. It should be a causal language model such as GPT2.
+            or any model mapped inside the `AutoModelForSeq2SeqLM` class.
         kwargs:
-            Additional keyword arguments passed along to the [`ValueHead`] class.
+            Additional keyword arguments passed along to the `ValueHead` class.
     """
 
     transformers_parent_class = AutoModelForSeq2SeqLM
@@ -307,9 +317,9 @@ class AutoModelForSeq2SeqLMWithValueHead(PreTrainedModelWrapper):
 
     def post_init(self, state_dict):
         r"""
-        We add the state dictionary of the value head to the state dictionary of the wrapped model by prepending the
-        key with `v_head.`. This function removes the `v_head.` prefix from the keys of the value head state
-        dictionary.
+        We add the state dictionary of the value head to the state dictionary of the wrapped model
+        by prepending the key with `v_head.`. This function removes the `v_head.` prefix from the
+        keys of the value head state dictionary.
         """
         for k in list(state_dict.keys()):
             if "v_head." in k:
@@ -337,8 +347,8 @@ class AutoModelForSeq2SeqLMWithValueHead(PreTrainedModelWrapper):
 
             def set_device_hook(module, input, outputs):
                 r"""
-                A hook that sets the device of the output of the model to the device of the first parameter of the
-                model.
+                A hook that sets the device of the output of the model to the device of the first
+                parameter of the model.
 
                 Args:
                     module (`nn.Module`):
@@ -361,8 +371,8 @@ class AutoModelForSeq2SeqLMWithValueHead(PreTrainedModelWrapper):
 
     def state_dict(self, *args, **kwargs):
         r"""
-        Returns the state dictionary of the model. We add the state dictionary of the value head to the state
-        dictionary of the wrapped model by prepending the key with `v_head.`.
+        Returns the state dictionary of the model. We add the state dictionary of the value head
+        to the state dictionary of the wrapped model by prepending the key with `v_head.`.
         """
         if not self.is_peft_model:
             pretrained_model_state_dict = self.pretrained_model.state_dict(*args, **kwargs)

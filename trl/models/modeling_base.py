@@ -1,4 +1,4 @@
-# Copyright 2020-2025 The HuggingFace Team. All rights reserved.
+# Copyright 2022 The HuggingFace Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 import json
 import logging
 import os
@@ -32,6 +31,8 @@ from safetensors.torch import load_file as safe_load_file
 from transformers import GenerationMixin, PreTrainedModel, is_torch_npu_available, is_torch_xpu_available
 from transformers.utils import is_peft_available
 
+from ..import_utils import is_transformers_greater_than
+
 
 if is_peft_available():
     from peft import (
@@ -44,9 +45,10 @@ if is_peft_available():
         prepare_model_for_kbit_training,
     )
 
-
-from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-
+if is_transformers_greater_than("4.33.0"):
+    from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+else:
+    from transformers.deepspeed import is_deepspeed_zero3_enabled
 
 LAYER_PATTERNS = [
     "transformer.h.{layer}",
@@ -57,17 +59,15 @@ LAYER_PATTERNS = [
 
 
 class PreTrainedModelWrapper(nn.Module):
-    """
-    Wrapper for a [`~transformers.PreTrainedModel`] implemented as a standard PyTorch [`torch.nn.Module`].
-
-    This class provides a compatibility layer that preserves the key attributes and methods of the original
-    [`~transformers.PreTrainedModel`], while exposing a uniform interface consistent with PyTorch modules. It enables
-    seamless integration of pretrained Transformer models into custom training, evaluation, or inference workflows.
+    r"""
+    A wrapper class around a (`transformers.PreTrainedModel`) to be compatible with the
+    (`~transformers.PreTrained`) class in order to keep some attributes and methods of the
+    (`~transformers.PreTrainedModel`) class.
 
     Attributes:
-        pretrained_model ([`~transformers.PreTrainedModel`]):
+        pretrained_model (`transformers.PreTrainedModel`):
             The model to be wrapped.
-        parent_class ([`~transformers.PreTrainedModel`]):
+        parent_class (`transformers.PreTrainedModel`):
             The parent class of the model to be wrapped.
         supported_args (`list`):
             The list of arguments that are supported by the wrapper class.
@@ -113,21 +113,25 @@ class PreTrainedModelWrapper(nn.Module):
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
         r"""
-        Instantiates a new model from a pretrained model from `transformers`. The pretrained model is loaded using the
-        `from_pretrained` method of the [`~transformers.PreTrainedModel`] class. The arguments that are specific to the
-        [`~transformers.PreTrainedModel`] class are passed along this method and filtered out from the `kwargs`
-        argument.
+        Instantiates a new model from a pretrained model from `transformers`. The
+        pretrained model is loaded using the `from_pretrained` method of the
+        `transformers.PreTrainedModel` class. The arguments that are specific to the
+        `transformers.PreTrainedModel` class are passed along this method and filtered
+        out from the `kwargs` argument.
 
         Args:
-            pretrained_model_name_or_path (`str` or [`~transformers.PreTrainedModel`]):
+            pretrained_model_name_or_path (`str` or `transformers.PreTrainedModel`):
                 The path to the pretrained model or its name.
-            *model_args (`list`, *optional*):
-                Additional positional arguments passed along to the underlying model's `from_pretrained` method.
+            *model_args (`list`, *optional*)):
+                Additional positional arguments passed along to the underlying model's
+                `from_pretrained` method.
             **kwargs (`dict`, *optional*):
-                Additional keyword arguments passed along to the underlying model's `from_pretrained` method. We also
-                pre-process the kwargs to extract the arguments that are specific to the
-                [`~transformers.PreTrainedModel`] class and the arguments that are specific to trl models. The kwargs
-                also support `prepare_model_for_kbit_training` arguments from `peft` library.
+                Additional keyword arguments passed along to the underlying model's
+                `from_pretrained` method. We also pre-process the kwargs to extract
+                the arguments that are specific to the `transformers.PreTrainedModel`
+                class and the arguments that are specific to trl models. The kwargs
+                also support `prepare_model_for_kbit_training` arguments from
+                `peft` library.
         """
         if kwargs is not None:
             peft_config = kwargs.pop("peft_config", None)
@@ -153,13 +157,8 @@ class PreTrainedModelWrapper(nn.Module):
 
         current_device = cls._get_current_device()
         if isinstance(pretrained_model_name_or_path, str):
-            quantization_config = pretrained_kwargs.get("quantization_config", None)
-            if quantization_config is not None:
-                is_loaded_in_8bit = getattr(quantization_config, "load_in_8bit", False)
-                is_loaded_in_4bit = getattr(quantization_config, "load_in_4bit", False)
-            else:
-                is_loaded_in_8bit = pretrained_kwargs["load_in_8bit"] if "load_in_8bit" in pretrained_kwargs else False
-                is_loaded_in_4bit = pretrained_kwargs["load_in_4bit"] if "load_in_4bit" in pretrained_kwargs else False
+            is_loaded_in_8bit = pretrained_kwargs["load_in_8bit"] if "load_in_8bit" in pretrained_kwargs else False
+            is_loaded_in_4bit = pretrained_kwargs["load_in_4bit"] if "load_in_4bit" in pretrained_kwargs else False
         else:
             is_loaded_in_8bit = getattr(pretrained_model_name_or_path, "is_loaded_in_8bit", False)
             is_loaded_in_4bit = getattr(pretrained_model_name_or_path, "is_loaded_in_4bit", False)
@@ -397,7 +396,7 @@ class PreTrainedModelWrapper(nn.Module):
     @classmethod
     def _get_current_device(cls):
         r"""
-        Get the current device. For GPU & XPU, we return the local process index using the `accelerate.PartialState`
+        Get the current device. For GPU, we return the local process index using the `accelerate.PartialState`
         object to handle corner cases when running scripts in distributed environments.
 
         Returns:
@@ -405,17 +404,18 @@ class PreTrainedModelWrapper(nn.Module):
                 The current device.
         """
         state = PartialState()
-        if torch.cuda.is_available() or is_torch_xpu_available():
-            return state.local_process_index
+        if is_torch_xpu_available():
+            return f"xpu:{state.local_process_index}"
         elif is_torch_npu_available():
             return f"npu:{state.local_process_index}"
         else:
-            return "cpu"
+            return state.local_process_index if torch.cuda.is_available() else "cpu"
 
     @classmethod
     def _split_kwargs(cls, kwargs):
         """
-        Separate the kwargs from the arguments that we support inside `supported_args` and the ones that we don't.
+        Separate the kwargs from the arguments that we support inside
+        `supported_args` and the ones that we don't.
         """
         check_peft_kwargs = False
 
@@ -447,9 +447,10 @@ class PreTrainedModelWrapper(nn.Module):
         cls, pretrained_model, adapter_model_id, adapter_name="reward_model_adapter", token=None
     ):
         r"""
-        Add and load a reward modeling adapter. This method can only be used if the model is a `PeftModel` and if you
-        have initialized the model with the `reward_modeling_adapter_id` argument, pointing to the id of the reward
-        modeling adapter. The latest needs also to contain the score head in order to produce the reward.
+        Add and load a reward modeling adapter. This method can only be used if the
+        model is a `PeftModel` and if you have initialized the model with the `reward_modeling_adapter_id`
+        argument, pointing to the id of the reward modeling adapter. The latest needs also to contain the
+        score head in order to produce the reward.
         """
         pretrained_model.load_adapter(adapter_model_id, adapter_name, is_trainable=False)
         pretrained_model.train()
@@ -475,7 +476,8 @@ class PreTrainedModelWrapper(nn.Module):
                         )
                     except Exception as exc:
                         raise ValueError(
-                            "Could not find adapter model in the Hub, make sure you have the correct adapter model id."
+                            "Could not find adapter model in the Hub, "
+                            "make sure you have the correct adapter model id."
                         ) from exc
                 else:
                     local_filename = filename
@@ -516,28 +518,32 @@ class PreTrainedModelWrapper(nn.Module):
     def push_to_hub(self, *args, **kwargs):
         r"""
         Push the pretrained model to the hub. This method is a wrapper around
-        [`~transformers.PreTrainedModel.push_to_hub`]. Please refer to the documentation of
-        [`~transformers.PreTrainedModel.push_to_hub`] for more information.
+        `transformers.PreTrainedModel.push_to_hub`. Please refer to the documentation
+        of `transformers.PreTrainedModel.push_to_hub` for more information.
 
         Args:
             *args (`list`, *optional*):
-                Positional arguments passed along to the underlying model's `push_to_hub` method.
+                Positional arguments passed along to the underlying model's
+                `push_to_hub` method.
             **kwargs (`dict`, *optional*):
-                Keyword arguments passed along to the underlying model's `push_to_hub` method.
+                Keyword arguments passed along to the underlying model's
+                `push_to_hub` method.
         """
         raise NotImplementedError
 
     def save_pretrained(self, *args, **kwargs):
         r"""
         Save the pretrained model to a directory. This method is a wrapper around
-        [`~transformers.PreTrainedModel.save_pretrained`]. Please refer to the documentation of
-        [`~transformers.PreTrainedModel.save_pretrained`] for more information.
+        `transformers.PreTrainedModel.save_pretrained`. Please refer to the documentation
+        of `transformers.PreTrainedModel.save_pretrained` for more information.
 
         Args:
             *args (`list`, *optional*):
-                Positional arguments passed along to the underlying model's `save_pretrained` method.
+                Positional arguments passed along to the underlying model's
+                `save_pretrained` method.
             **kwargs (`dict`, *optional*):
-                Keyword arguments passed along to the underlying model's `save_pretrained` method.
+                Keyword arguments passed along to the underlying model's
+                `save_pretrained` method.
         """
         state_dict = kwargs.get("state_dict")
         if state_dict is None:
@@ -545,7 +551,7 @@ class PreTrainedModelWrapper(nn.Module):
             kwargs["state_dict"] = state_dict
 
         # if it is a peft model only save the `v_head` state_dict and
-        # pop the `state_dict` from the kwargs to avoid silent bugs with `peft`
+        # pop the `state_dict` from the kwargs to avoid slient bugs with `peft`
         if self.is_peft_model:
             save_path = args[0]
             save_path = os.path.join(save_path, "pytorch_model.bin")
@@ -562,16 +568,17 @@ class PreTrainedModelWrapper(nn.Module):
 
     def post_init(self, *args, **kwargs):
         r"""
-        Post initialization method. This method is called after the model is instantiated and loaded from a checkpoint.
-        It can be used to perform additional operations such as loading the state_dict.
+        Post initialization method. This method is called after the model is
+        instantiated and loaded from a checkpoint. It can be used to perform
+        additional operations such as loading the state_dict.
         """
         raise NotImplementedError
 
     def compute_reward_score(self, input_ids, attention_mask=None, **kwargs):
         r"""
-        Computes the reward score for a given input. The method has first to enable the adapter and then compute the
-        reward score. After that the model disables the reward modeling adapter and enables the default ppo adapter
-        again.
+        Computes the reward score for a given input. The method has first to enable the adapter
+        and then compute the reward score. After that the model disables the reward modeling
+        adapter and enables the default ppo adapter again.
         """
         if not self.supports_rm_adapter:
             raise ValueError("This model does not support reward modeling adapter.")
@@ -605,18 +612,17 @@ def create_reference_model(
     Creates a static reference copy of a model. Note that model will be in `.eval()` mode.
 
     Args:
-        model ([`PreTrainedModelWrapper`]): The model to be copied.
-        num_shared_layers (`int`, *optional*):
-            The number of initial layers that are shared between both models and kept frozen.
+        model (`PreTrainedModelWrapper`): The model to be copied.
+        num_shared_layers (`int`, *optional*): The number of initial layers that are shared between both models and kept frozen.
         pattern (`str`, *optional*): The shared layers are selected with a string pattern
             (e.g. "transformer.h.{layer}" for GPT2) and if a custom pattern is necessary it can be passed here.
 
     Returns:
-        [`PreTrainedModelWrapper`]
+        `PreTrainedModelWrapper`
     """
     if is_deepspeed_zero3_enabled():
         raise ValueError(
-            "DeepSpeed ZeRO-3 is enabled and is not compatible with `create_reference_model()`. Please instantiate your reference model directly with `AutoModelForCausalLM.from_pretrained()`."
+            "DeepSpeed ZeRO-3 is enabled and is not compatible with `create_reference_model()`. Please instantiate your reference model directly with `AutoCausalLM.from_pretrained()`."
         )
 
     parameter_names = [n for n, _ in model.named_parameters()]
@@ -674,37 +680,34 @@ def create_reference_model(
 
 
 class GeometricMixtureWrapper(GenerationMixin):
-    """
+    r"""
     Geometric Mixture generation wrapper that samples from the logits of two model's geometric mixture.
 
     Args:
-        model ([`~transformers.PreTrainedModel`]): The model to be wrapped.
-        ref_model ([`~transformers.PreTrainedModel`]): The reference model.
-        generation_config ([`~transformers.GenerationConfig`]): The generation config.
+        model (`PreTrainedModel`): The model to be wrapped.
+        ref_model (`PreTrainedModel`): The reference model.
+        generation_config (`GenerationConfig`): The generation config.
         mixture_coef (`float`, *optional* - default: 0.5): The mixture coefficient.
     """
 
     main_input_name = "input_ids"
     _supports_cache_class = False
     _supports_static_cache = False
-    _is_stateful = False
 
     def __init__(self, model, ref_model, generation_config, mixture_coef=0.5, device=None):
         super().__init__()
 
-        self.model = model
+        self.model = model.eval()
         self.config = model.config
-        self.ref_model = ref_model
+        self.ref_model = ref_model.eval()
         self.generation_config = generation_config
         self.mixture_coef = mixture_coef
         self.device = device
-        if hasattr(self.model, "_is_stateful"):
-            self._is_stateful = self.model._is_stateful
 
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
 
-    @torch.inference_mode()
+    @torch.no_grad()
     def forward(self, *args, **kwargs):
         model_outputs = self.model(*args, **kwargs)
         model_logits = model_outputs.logits
